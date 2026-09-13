@@ -10,7 +10,7 @@
 - Arduino UNO / Arduino IDE / PlatformIO 
 - Arduino C++ / 외부 라이브러리 불필요
 - 시리얼 모니터: **115200 baud**
-- VS Code + PlatformIO 환경은 향후 구성 예정이며 현재 패키지에는 PlatformIO 설정이 없습니다.
+- VS Code + PlatformIO 환경과 Arduino IDE 환경 둘 다 사용합니다.
 
 ## 구성 파일
 
