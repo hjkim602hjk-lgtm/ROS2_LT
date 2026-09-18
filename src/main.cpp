@@ -10,23 +10,28 @@ const uint8_t ENA = 5, IN1 = 7,  IN2 = 8;    // 오른쪽 모터
 const uint8_t ENB = 6, IN3 = 9,  IN4 = 10;   // 왼쪽 모터
 
 // ---- 캘리브레이션 (실측 후 조정) ----
-#define CALIBRATE 0          // 1로 두면 주행 안 하고 센서 원시값만 출력
-const int  IR_TH_L    = 35;   // 왼쪽 흑/백 경계 (실측값)
-const int  IR_TH_R    = 30;   // 오른쪽 흑/백 경계 (실측값)
-const bool BLACK_HIGH = true; // 검정에서 analog 값이 커지면 true, 작아지면 false02313
+#define CALIBRATE 0           // 1로 두면 주행 안 하고 센서 원시값만 출력
+const int  IR_TH_L    = 25;   // 왼쪽 흑/백 경계 (실측값)
+const int  IR_TH_R    = 40;   // 오른쪽 흑/백 경계 (실측값)
+const bool BLACK_HIGH = true; // 검정에서 analog 값이 커지면 true, 작아지면 false
 const bool FLIP_R = false, FLIP_L = true;  // 모터가 반대로 돌면 true
 const int TRIM_L = 100;  // 좌우 속도 보정 (%). 느린 쪽을 100으로 두고
-const int TRIM_R = 70;   // 빠른 쪽을 내려서 직진을 맞춘다
+const int TRIM_R = 95;   // 빠른 쪽을 내려서 직진을 맞춘다
 
-const int BASE  = 130;   // 직진 PWM (방지턱 넘을 토크 확보: 너무 낮추지 말 것)
-const int DIFF  = 100;    // 완만한 곡선 보정량
-const int PIVOT = 170;   // 90도 제자리 선회 PWM
-const unsigned long CORNER_MS = 120; // 한쪽이 이만큼 계속 검정 = 급커브로 판정
-const unsigned long FINISH_MS = 100; // 양쪽 동시에 이만큼 계속 검정 = T 피니시라인
+const int BASE  = 100;   // 직진 PWM (방지턱 넘을 토크 확보: 너무 낮추지 말 것)
+const int DIFF  = 150;    // 완만한 곡선 보정량
+const int MIN_PWM = 80;  // 이보다 낮으면 모터가 정지마찰을 못 이긴다 (실측해서 조정)
+const int PIVOT = 150;   // 90도 제자리 선회 PWM
+const unsigned long CORNER_MS = 70; // 한쪽이 이만큼 계속 검정 = 급커브로 판정
+// 코너 감지 시점엔 회전축(뒷바퀴)이 꼭짓점보다 센서~바퀴축 거리만큼 뒤에 있다.
+// 그만큼 전진해서 회전축을 꼭짓점에 맞춘 뒤 제자리 회전f한다.
+// ADVANCE_MS = (센서~바퀴축 거리 cm / 주행속도 cm/s) * 1000
+const unsigned long ADVANCE_MS = 200;
+const unsigned long FINISH_MS = 120; // 양쪽 동시에 이만큼 계속 검정 = T 피니시라인
 
 const int LDR_DARK = 850;            // INPUT_PULLUP: 어두울수록 값 큼
 const unsigned long DARK_MS = 400;   // 그림자 오판 방지
-const int STOP_CM = 15;              // 초음파 정지 거리
+const int STOP_CM = 10;              // 초음파 정지 거리
 const unsigned long LOG_MS = 300;    // 상태 출력 주기 (0이면 끔)
 
 // ---- 조향 상태 ----
@@ -35,20 +40,41 @@ static Drive mk(int l, int r) { Drive d; d.l = l; d.r = r; return d; }
 int8_t blackSide = 0;            // -1 왼쪽 검정, +1 오른쪽 검정, 0 없음
 unsigned long blackSince = 0;
 
+// 코너 처리 래치: 감지 시점에 방향을 확정하고 [전진 -> 회전]을 끝까지 수행한다.
+// 회전은 "반대편 센서가 검정을 물 때"까지 유지한다 (흰 바닥으로는 종료하지 않는다).
+int8_t cornerDir = 0;            // 0 = 코너 아님, -1 좌(반시계), +1 우(시계)
+unsigned long advanceUntil = 0;  // 이 시각까지는 축 맞추기 전진
+
 Drive decide(bool L, bool R, unsigned long now) {
+  if (cornerDir) {
+    // 1단계: 회전축을 꼭짓점에 맞추는 전진. 꼭짓점 통과 구간이라 센서는 무시한다
+    if (now < advanceUntil) return mk(BASE, BASE);
+
+    // 2단계: 기억한 방향으로 제자리 회전. 반대편 센서가 라인을 물 때까지 계속
+    bool opposite = (cornerDir < 0) ? R : L;
+    if (!opposite)
+      return cornerDir < 0 ? mk(-PIVOT, PIVOT) : mk(PIVOT, -PIVOT);
+    cornerDir = 0;      // 반대편이 잡았다 -> 종료, 아래 완만 보정으로 인계
+    blackSide = 0;      // 타이머 리셋해서 곧바로 재승격되지 않게
+  }
+
   int8_t side = 0;
   if (L && !R)      side = -1;
   else if (R && !L) side = +1;
   else if (L && R)  side = blackSide;   // 교차선/코너 진입: 직전 방향 유지
 
   if (side != blackSide) { blackSide = side; blackSince = now; }
+
   if (side == 0) return mk(BASE, BASE);
 
-  bool corner = (now - blackSince) > CORNER_MS; // 계속 검정 = 라인이 꺾여 달아남
-  if (side < 0) // 왼쪽 검정 -> 왼쪽으로 복귀 (오른쪽 출력 up)
-    return corner ? mk(-PIVOT, PIVOT) : mk(BASE - DIFF, BASE + DIFF);
-  else          // 오른쪽 검정 -> 오른쪽으로 복귀 (왼쪽 출력 up)
-    return corner ? mk(PIVOT, -PIVOT) : mk(BASE + DIFF, BASE - DIFF);
+  if ((now - blackSince) > CORNER_MS) {  // 계속 검정 = 라인이 꺾여 달아남 -> 코너 확정
+    cornerDir = side;                    // 감지된 방향 기억 (이후 센서와 무관하게 이 방향으로 회전)
+    advanceUntil = now + ADVANCE_MS;
+    return mk(BASE, BASE);
+  }
+
+  if (side < 0) return mk(BASE - DIFF, BASE + DIFF);  // 왼쪽 검정 -> 오른쪽 출력 up
+  else          return mk(BASE + DIFF, BASE - DIFF);  // 오른쪽 검정 -> 왼쪽 출력 up
 }
 
 // ---- 하드웨어 ----
@@ -59,9 +85,11 @@ bool isBlack(uint8_t pin, int th) {
 
 void motor(uint8_t en, uint8_t a, uint8_t b, int v, bool flip) {
   if (flip) v = -v;
+  int p = constrain(abs(v), 0, 255);
+  if (p > 0 && p < MIN_PWM) p = MIN_PWM;   // 돌라고 시켰으면 최소한 돌 수는 있게
   digitalWrite(a, v >= 0);
   digitalWrite(b, v <  0);
-  analogWrite(en, constrain(abs(v), 0, 255));
+  analogWrite(en, p);
 }
 void drive(Drive d) {
   motor(ENB, IN3, IN4, d.l * TRIM_L / 100, FLIP_L);
@@ -91,14 +119,24 @@ void selfTest() {
   bool ok = true;
   blackSide = 0; blackSince = 0;
   Drive d = decide(false, false, 0);              CHECK(d.l == BASE && d.r == BASE);
-  d = decide(true, false, 1000);                  CHECK(d.r > d.l && d.l > 0);       // 완만 좌보정
-  d = decide(true, false, 1121);  CHECK(d.l < 0 && d.r > 0);   // 90도 좌선회
-  d = decide(true, true,  1122);  CHECK(d.l < 0 && d.r > 0);   // 둘 다 검정 = 방향 유지
-  blackSide = 0; blackSince = 0;
-  d = decide(false, true, 2000);  CHECK(d.l > d.r && d.r > 0); // 완만 우보정
-  d = decide(false, true, 2121);  CHECK(d.l > 0 && d.r < 0);   // 90도 우선회
-  blackSide = 0; blackSince = 0;
-  d = decide(false, false, 3000); CHECK(d.l == BASE && d.r == BASE); // 복귀
+  d = decide(true, false, 1000);                  CHECK(d.r > d.l);   // 완만 좌보정 (DIFF>BASE면 안쪽은 역회전)
+  // --- 우코너: 감지 -> 전진 -> 왼쪽이 물 때까지 시계방향 회전 ---
+  blackSide = 0; blackSince = 0; cornerDir = 0; advanceUntil = 0;
+  d = decide(false, true, 2000);  CHECK(d.l > d.r);                             // 완만 우보정
+  d = decide(false, true, 2121);  CHECK(cornerDir == 1 && d.l == BASE);         // 코너 확정 -> 전진
+  d = decide(false, false, 2200); CHECK(d.l == BASE && d.r == BASE);            // 전진 중 (센서 무시)
+  d = decide(false, false, 2400); CHECK(d.l > 0 && d.r < 0);                    // 정렬 끝 -> 시계방향 회전
+  d = decide(false, false, 2900); CHECK(d.l > 0 && d.r < 0);                    // 흰 바닥이어도 회전 유지
+  d = decide(false, true,  3000); CHECK(d.l > 0 && d.r < 0);                    // 오른쪽이 물어도 회전 유지
+  d = decide(true,  false, 3100); CHECK(cornerDir == 0 && d.r > d.l);           // 왼쪽이 물면 종료 -> 완만 좌보정
+  // --- 좌코너 ---
+  blackSide = 0; blackSince = 0; cornerDir = 0; advanceUntil = 0;
+  d = decide(true, false, 4000);  CHECK(d.r > d.l);                             // 완만 좌보정
+  d = decide(true, false, 4121);  CHECK(cornerDir == -1 && d.l == BASE);        // 코너 확정 -> 전진
+  d = decide(false, false, 4400); CHECK(d.l < 0 && d.r > 0);                    // 정렬 끝 -> 반시계 회전
+  d = decide(false, true,  4600); CHECK(cornerDir == 0 && d.l > d.r);           // 오른쪽이 물면 종료
+  blackSide = 0; blackSince = 0; cornerDir = 0; advanceUntil = 0;
+  d = decide(false, false, 5000); CHECK(d.l == BASE && d.r == BASE);            // 복귀
   bothSince = 0;
   CHECK(!isFinish(true,  true,  1000));            // 막 닿은 순간은 아직 아님
   CHECK(!isFinish(true,  true,  1000 + FINISH_MS));// 경계값은 아직 아님
