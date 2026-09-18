@@ -22,8 +22,6 @@ const int BASE  = 130;   // 직진 PWM (방지턱 넘을 토크 확보: 너무 �
 const int DIFF  = 100;    // 완만한 곡선 보정량
 const int PIVOT = 170;   // 90도 제자리 선회 PWM
 const unsigned long CORNER_MS = 120; // 한쪽이 이만큼 계속 검정 = 급커브로 판정
-const int BACKUP = 150;              // 제자리 회전 직전 후진 PWM
-const unsigned long BACKUP_MS = CORNER_MS; // 감지하는 동안 지나친 만큼 되돌아간다
 const unsigned long FINISH_MS = 100; // 양쪽 동시에 이만큼 계속 검정 = T 피니시라인
 
 const int LDR_DARK = 850;            // INPUT_PULLUP: 어두울수록 값 큼
@@ -37,32 +35,20 @@ static Drive mk(int l, int r) { Drive d; d.l = l; d.r = r; return d; }
 int8_t blackSide = 0;            // -1 왼쪽 검정, +1 오른쪽 검정, 0 없음
 unsigned long blackSince = 0;
 
-unsigned long backupUntil = 0;   // 이 시각까지는 후진
-bool backedUp = false;           // 이번 코너에서 이미 후진했나
-
 Drive decide(bool L, bool R, unsigned long now) {
-  // 후진 중에는 센서를 보지 않는다. 지나쳐온 자리라 지금 읽어도 의미가 없다
-  if (now < backupUntil) return mk(-BACKUP, -BACKUP);
-
   int8_t side = 0;
   if (L && !R)      side = -1;
   else if (R && !L) side = +1;
   else if (L && R)  side = blackSide;   // 교차선/코너 진입: 직전 방향 유지
 
-  if (side != blackSide) { blackSide = side; blackSince = now; backedUp = false; }
+  if (side != blackSide) { blackSide = side; blackSince = now; }
   if (side == 0) return mk(BASE, BASE);
 
   bool corner = (now - blackSince) > CORNER_MS; // 계속 검정 = 라인이 꺾여 달아남
-  if (corner && !backedUp) {      // 급커브 확정 -> 먼저 지나쳐온 만큼 후진
-    backedUp = true;
-    backupUntil = now + BACKUP_MS;
-    return mk(-BACKUP, -BACKUP);
-  }
-  if (corner)   // 후진 완료 -> 라인 위에서 제자리 회전
-    return side < 0 ? mk(-PIVOT, PIVOT) : mk(PIVOT, -PIVOT);
-
-  if (side < 0) return mk(BASE - DIFF, BASE + DIFF);  // 왼쪽 검정 -> 오른쪽 출력 up
-  else          return mk(BASE + DIFF, BASE - DIFF);  // 오른쪽 검정 -> 왼쪽 출력 up
+  if (side < 0) // 왼쪽 검정 -> 왼쪽으로 복귀 (오른쪽 출력 up)
+    return corner ? mk(-PIVOT, PIVOT) : mk(BASE - DIFF, BASE + DIFF);
+  else          // 오른쪽 검정 -> 오른쪽으로 복귀 (왼쪽 출력 up)
+    return corner ? mk(PIVOT, -PIVOT) : mk(BASE + DIFF, BASE - DIFF);
 }
 
 // ---- 하드웨어 ----
@@ -106,14 +92,12 @@ void selfTest() {
   blackSide = 0; blackSince = 0;
   Drive d = decide(false, false, 0);              CHECK(d.l == BASE && d.r == BASE);
   d = decide(true, false, 1000);                  CHECK(d.r > d.l && d.l > 0);       // 완만 좌보정
-  d = decide(true, false, 1121);  CHECK(d.l < 0 && d.r < 0);   // 승격 -> 먼저 후진
-  d = decide(true, false, 1200);  CHECK(d.l < 0 && d.r < 0);   // 후진 중 (센서 무시)
-  d = decide(true, false, 1300);  CHECK(d.l < 0 && d.r > 0);   // 후진 끝 -> 좌선회
-  blackSide = 0; blackSince = 0; backupUntil = 0; backedUp = false;
+  d = decide(true, false, 1121);  CHECK(d.l < 0 && d.r > 0);   // 90도 좌선회
+  d = decide(true, true,  1122);  CHECK(d.l < 0 && d.r > 0);   // 둘 다 검정 = 방향 유지
+  blackSide = 0; blackSince = 0;
   d = decide(false, true, 2000);  CHECK(d.l > d.r && d.r > 0); // 완만 우보정
-  d = decide(false, true, 2121);  CHECK(d.l < 0 && d.r < 0);   // 승격 -> 후진
-  d = decide(false, true, 2300);  CHECK(d.l > 0 && d.r < 0);   // 후진 끝 -> 우선회
-  blackSide = 0; blackSince = 0; backupUntil = 0; backedUp = false;
+  d = decide(false, true, 2121);  CHECK(d.l > 0 && d.r < 0);   // 90도 우선회
+  blackSide = 0; blackSince = 0;
   d = decide(false, false, 3000); CHECK(d.l == BASE && d.r == BASE); // 복귀
   bothSince = 0;
   CHECK(!isFinish(true,  true,  1000));            // 막 닿은 순간은 아직 아님
