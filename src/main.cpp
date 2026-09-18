@@ -11,7 +11,7 @@ const uint8_t ENB = 6, IN3 = 9,  IN4 = 10;   // 왼쪽 모터
 
 // ---- 캘리브레이션 (실측 후 조정) ----
 #define CALIBRATE 0           // 1로 두면 주행 안 하고 센서 원시값만 출력
-const int  IR_TH_L    = 25;   // 왼쪽 흑/백 경계 (실측값)
+const int  IR_TH_L    = 27;   // 왼쪽 흑/백 경계 (실측값)
 const int  IR_TH_R    = 40;   // 오른쪽 흑/백 경계 (실측값)
 const bool BLACK_HIGH = true; // 검정에서 analog 값이 커지면 true, 작아지면 false
 const bool FLIP_R = false, FLIP_L = true;  // 모터가 반대로 돌면 true
@@ -22,11 +22,11 @@ const int BASE  = 100;   // 직진 PWM (방지턱 넘을 토크 확보: 너무 �
 const int DIFF  = 150;    // 완만한 곡선 보정량
 const int MIN_PWM = 80;  // 이보다 낮으면 모터가 정지마찰을 못 이긴다 (실측해서 조정)
 const int PIVOT = 150;   // 90도 제자리 선회 PWM
-const unsigned long CORNER_MS = 70; // 한쪽이 이만큼 계속 검정 = 급커브로 판정
+const unsigned long CORNER_MS = 10; // 한쪽이 이만큼 계속 검정 = 급커브로 판정
 // 코너 감지 시점엔 회전축(뒷바퀴)이 꼭짓점보다 센서~바퀴축 거리만큼 뒤에 있다.
 // 그만큼 전진해서 회전축을 꼭짓점에 맞춘 뒤 제자리 회전f한다.
 // ADVANCE_MS = (센서~바퀴축 거리 cm / 주행속도 cm/s) * 1000
-const unsigned long ADVANCE_MS = 200;
+const unsigned long ADVANCE_MS = 500;
 const unsigned long FINISH_MS = 120; // 양쪽 동시에 이만큼 계속 검정 = T 피니시라인
 
 const int LDR_DARK = 850;            // INPUT_PULLUP: 어두울수록 값 큼
