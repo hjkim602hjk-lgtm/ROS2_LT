@@ -144,9 +144,9 @@ static_assert(
 
 // ============================================================
 
-const int START_BOOST_PWM = 25;
+const int START_BOOST_PWM = 130;
 
-const unsigned long START_BOOST_MS = 2000;
+const unsigned long START_BOOST_MS = 120;
 
 // ============================================================
 
@@ -162,7 +162,7 @@ const unsigned long START_BOOST_MS = 2000;
 
 const int RESET_BOOST_PWM = 255;
 
-const unsigned long RESET_BOOST_MS = 10000;  // 10초
+const unsigned long RESET_BOOST_MS = 500;  // 
 
 // ============================================================
 
